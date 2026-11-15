@@ -7,24 +7,20 @@
 ![arm64](https://img.shields.io/badge/ABI-arm64--v8a-555?style=for-the-badge)
 ![Tablet first](https://img.shields.io/badge/made%20for-tablets-blueviolet?style=for-the-badge)
 
-> [!IMPORTANT]
-> 🙏 **This is not my original work.** This repository is a modified copy of
-> **[morte2437/photocraft-android](https://github.com/morte2437/photocraft-android)**, the
-> unofficial Android port of PhotoCraft made by **[@morte2437](https://github.com/morte2437)**.
-> All the Android porting work (pen input, touch gestures, Shortcut Pad, file pickers, the phone
-> layout and much more) is **theirs** ❤️. PhotoCraft itself is made by the **ArtCraft team and
-> the PhotoCraft contributors** ([storytold/photocraft](https://github.com/storytold/photocraft)).
-> This fork only adds the fixes listed below. Please ⭐ and support the original projects!
+## 👥 Authors
 
----
-
-## 🙌 Credits
-
-| Who | What | Link |
+| # | Author | Role |
 |---|---|---|
-| 👑 **morte2437** | Created the Android port this fork is built on | [morte2437/photocraft-android](https://github.com/morte2437/photocraft-android) |
-| 🎨 **ArtCraft team & PhotoCraft contributors** | Created PhotoCraft, the editor itself | [storytold/photocraft](https://github.com/storytold/photocraft) |
-| 🛠️ **This fork** | Lower pen lag, Layer Style fixes, crash hardening (see below) | you are here |
+| 1️⃣ | **Sankalp Gajbhiye** ([@sankalp-v1](https://github.com/sankalp-v1)) | 👑 Author of this version: the pen lag, Layer Style and stability fixes |
+| 2️⃣ | **Claude** (Anthropic) | 🤖 Co-author |
+
+## 🙏 Based on
+
+> [!NOTE]
+> This version is built on **[morte2437/photocraft-android](https://github.com/morte2437/photocraft-android)**,
+> the unofficial Android port of **PhotoCraft** by **[@morte2437](https://github.com/morte2437)**,
+> and PhotoCraft is made by the **ArtCraft team and the PhotoCraft contributors**
+> ([storytold/photocraft](https://github.com/storytold/photocraft)). Thanks to them ❤️
 
 - 📥 The first commit is the **base**: morte2437's port as they published it (branch
   `android-port`, commit `e4258e9`, version 0.23.1-1).
