@@ -51,8 +51,10 @@ import java.util.regex.Pattern;
  */
 final class Updater {
     private static final String TAG = "PhotoCraft";
-    /** The repository whose releases are the updates. */
-    static final String REPO = "morte2437/photocraft-android";
+    /** The repository whose releases are the updates: this fork's own, whose APKs are signed
+     * with the same key as this build (the original port's are signed with another, which
+     * Android refuses to install over this one). */
+    static final String REPO = "sankalp-v1/PhotoCraft--Android";
     private static final String API = "https://api.github.com/repos/" + REPO + "/releases?per_page=20";
     private static final Pattern TAG_VERSION = Pattern.compile("^android-v(\\d+)\\.(\\d+)\\.(\\d+)(?:-(\\d+))?$");
     private static final Pattern NAME_VERSION = Pattern.compile("^(\\d+)\\.(\\d+)\\.(\\d+)(?:-(\\d+))?");

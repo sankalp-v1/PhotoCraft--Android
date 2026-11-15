@@ -56,7 +56,8 @@ cargo ndk -t arm64-v8a -P "$API" -o "$HERE/android/app/src/main/jniLibs" \
     build -p photocraft-android --profile "$PROFILE" "${FEATURE_ARGS[@]}"
 
 cd "$HERE/android"
-if [[ "${OS:-}" == "Windows_NT" ]]; then ./gradlew.bat --no-daemon assembleRelease; else ./gradlew --no-daemon assembleRelease; fi
+# Through the shell, so a checkout that lost the wrapper's executable bit (a zip, Windows) builds too.
+if [[ "${OS:-}" == "Windows_NT" ]]; then ./gradlew.bat --no-daemon assembleRelease; else sh ./gradlew --no-daemon assembleRelease; fi
 
 VERSION="${APP_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
 if [[ "${RELEASE_BUILD:-0}" != 0 ]]; then VERSION="$VERSION-$RELEASE_BUILD"; fi

@@ -680,3 +680,96 @@ fn file_info_keeps_multiline_metadata_on_confirm_and_reopen() {
         assert_eq!(app.ui.dialog_mut(id).unwrap().fields[key], "First line\nSecond line");
     }
 }
+
+/// Android port #36: Layer Style on a phone (upright, on its side, small and large) sits in the
+/// window, with its title, effect list and OK / Cancel in view.
+#[test]
+fn phone_layer_style_fits_the_window() {
+    use egui_kittest::kittest::Queryable;
+    for size in [
+        egui::vec2(360.0, 640.0),
+        egui::vec2(400.0, 760.0),
+        egui::vec2(412.0, 915.0),
+        egui::vec2(640.0, 360.0),
+        egui::vec2(800.0, 340.0),
+        egui::vec2(915.0, 412.0),
+    ] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.compact_layout = true;
+        app.run("file.new", json!({"width": 256, "height": 256, "background": "#3366cc"})).unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let d = crate::layer_style::open(h.state_mut(), Some("dropShadow")).expect("Layer Style opens");
+        h.run_steps(6);
+        let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(("dialog", d)))).expect("the Layer Style window");
+        let screen_grown = screen.expand(0.5);
+        assert!(screen_grown.contains_rect(window), "{size:?}: Layer Style {window:?} outside the window");
+        assert!(window.height() >= 160.0_f32.min(size.y - 16.0), "{size:?}: Layer Style only {:.0} tall", window.height());
+        for label in ["OK", "Cancel"] {
+            let r = h.get_by_label(label).rect();
+            assert!(screen.contains_rect(r) && window.contains_rect(r), "{size:?}: {label} {r:?} out of view (window {window:?})");
+        }
+        let shot = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>, name: &str| {
+            if let Some(dir) = std::env::var_os("PHONE_LAYER_STYLE_SHOTS")
+                && let Ok(image) = h.render()
+            {
+                image.save(std::path::PathBuf::from(dir).join(format!("layer-style-{}x{}{name}.png", size.x, size.y))).unwrap();
+            }
+        };
+        shot(&mut h, "");
+        // Narrow: the effect list is a tab away, and picking a page in it shows the page.
+        if size.x < 600.0 {
+            h.get_by_label("Effects").click();
+            h.run_steps(3);
+            shot(&mut h, "-effects");
+            assert!(h.query_by_label("Blend Mode").is_none(), "{size:?}: the list replaces the page");
+            h.state_mut().ui.dialogs.last_mut().unwrap().fields.insert("selected".into(), json!("blendingOptions"));
+            h.run_steps(3);
+            assert!(h.query_by_label("Blending Options").is_some(), "{size:?}: the Blending Options page shows");
+            assert!(screen.contains_rect(h.get_by_label("OK").rect()), "{size:?}: OK stays in view");
+        }
+    }
+}
+
+/// Layer Style in the tablet layout: full screen landscape and portrait, a split screen half and
+/// a DeX / free-form window. The desktop layout where it fits, all of it inside the window, and
+/// OK and Cancel in view.
+#[test]
+fn tablet_layer_style_fits_the_window() {
+    use egui_kittest::kittest::Queryable;
+    for size in [
+        egui::vec2(1280.0, 800.0),
+        egui::vec2(800.0, 1280.0),
+        egui::vec2(1024.0, 768.0),
+        egui::vec2(1366.0, 912.0),
+        egui::vec2(640.0, 800.0),
+        egui::vec2(600.0, 960.0),
+        egui::vec2(900.0, 560.0),
+        egui::vec2(1280.0, 400.0),
+    ] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 256, "height": 256, "background": "#3366cc"})).unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(|ui, app| show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let d = crate::layer_style::open(h.state_mut(), Some("dropShadow")).expect("Layer Style opens");
+        h.run_steps(6);
+        let window = h.ctx.memory(|m| m.area_rect(egui::Id::unique(("dialog", d)))).expect("the Layer Style window");
+        assert!(screen.expand(0.5).contains_rect(window), "{size:?}: Layer Style {window:?} outside the window");
+        for label in ["OK", "Cancel", "New Style…"] {
+            let r = h.get_by_label(label).rect();
+            assert!(screen.contains_rect(r) && window.contains_rect(r), "{size:?}: {label} {r:?} out of view (window {window:?})");
+        }
+        if size.x >= 800.0 {
+            // Room for the desktop layout: the list, the page and the button column side by side.
+            assert!(h.query_by_label("Effects").is_none(), "{size:?}: the desktop layout, not the tabs");
+            assert!(h.query_all_by_label("Blend Mode").next().is_some(), "{size:?}: the page shows beside the list");
+        }
+        if let Some(dir) = std::env::var_os("PHONE_LAYER_STYLE_SHOTS")
+            && let Ok(image) = h.render()
+        {
+            image.save(std::path::PathBuf::from(dir).join(format!("tablet-layer-style-{}x{}.png", size.x, size.y))).unwrap();
+        }
+    }
+}

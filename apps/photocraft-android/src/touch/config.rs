@@ -146,6 +146,9 @@ pub struct TouchConfig {
     /// The line being drawn appears under the pen at once, drawn by Android ahead of the app's
     /// frame and replaced by the real stroke when it's done (experimental).
     pub low_latency_ink: bool,
+    /// Frames go to the screen at its next refresh instead of queueing behind it, and the display
+    /// runs at its fastest rate (see `crate::pace`). Applies at the next start.
+    pub low_latency_present: bool,
 }
 
 impl Default for TouchConfig {
@@ -176,6 +179,7 @@ impl Default for TouchConfig {
                 PenSetting::new(PenAction::Eraser),
             ],
             low_latency_ink: false,
+            low_latency_present: true,
         }
     }
 }
@@ -230,6 +234,7 @@ mod tests {
         let c = TouchConfig::load(&path);
         assert_eq!(c.finger, FingerMode::Navigate);
         assert!(c.zoom && c.palm_rejection && c.long_press_right_click);
+        assert!(c.low_latency_present && !c.low_latency_ink, "settings saved before these existed keep their defaults");
         assert_eq!(c.pen(PenControl::Lower).action, PenAction::RightClick);
         assert_eq!(c.erasing_controls(), [false, true, false, true]);
         let saved = TouchConfig { finger: FingerMode::Gestures, two_finger_tap: "  Ctrl+0 ".into(), ..Default::default() }.sanitized();

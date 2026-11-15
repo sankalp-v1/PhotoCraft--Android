@@ -49,7 +49,13 @@ fn run(android: AndroidApp) -> Result<(), String> {
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup {
         create.instance_descriptor.backends = eframe::wgpu::Backends::VULKAN | eframe::wgpu::Backends::GL;
     }
-    let present = present_settings(&mut options, &android);
+    // Touch Input Settings › Low latency drawing (on unless turned off), read before the window
+    // opens: frames that don't queue behind the display, paced by the app (see `crate::pace`).
+    let low_latency = crate::touch::config::TouchConfig::load(&files_dir.join("touch-input.json")).low_latency_present;
+    let (present, paced) = present_settings(&mut options, &android, low_latency);
+    // This thread draws the frames: the Activity raises its priority and asks Android to keep
+    // its CPU fast while a stroke's frames are slow.
+    photocraft_tablet::android::mark_render_thread();
 
     eframe::run_native(
         "PhotoCraft",
@@ -69,8 +75,11 @@ fn run(android: AndroidApp) -> Result<(), String> {
             let font_outcome = crate::fonts::Outcome::default();
             // The keyboard opening or closing (and a cutout or corner change) lays the app out
             // again right away, not on the next touch.
-            let wake = cc.egui_ctx.clone();
-            photocraft_tablet::android::on_layout_change(move || wake.request_repaint());
+            // The Activity's thread never asks egui for a frame itself: that takes egui's lock,
+            // which a frame being drawn holds for milliseconds at a time (while tessellating), and
+            // the Activity's thread delivers the pen's samples and Android's own input.
+            let wake_frame = background_waker(cc.egui_ctx.clone());
+            photocraft_tablet::android::on_layout_change(wake_frame.clone());
             let wake = cc.egui_ctx.clone();
             let fonts_menu = crate::fonts::menu(&files_dir, bridge.clone(), font_outcome.clone(), move || wake.request_repaint());
             let wake = cc.egui_ctx.clone();
@@ -95,7 +104,7 @@ fn run(android: AndroidApp) -> Result<(), String> {
             enable_stroke_trace(&mut app, &android);
             app.perf.gpu_info.present = present;
             let feed = app.stylus.feed.clone();
-            let ctx = cc.egui_ctx.clone();
+            let wake = wake_frame.clone();
             let first = std::sync::atomic::AtomicBool::new(true);
             let installed = photocraft_tablet::android::install(move |s| {
                 // Once per run, so logcat shows the pen path is live and what the digitizer reports.
@@ -105,7 +114,7 @@ fn run(android: AndroidApp) -> Result<(), String> {
                     log::info!("first pen sample: {s:?}");
                 }
                 feed.set(s.map(|s| PenSample { pressure: s.pressure, tilt_x: s.tilt_x, tilt_y: s.tilt_y, rotation: s.rotation, eraser: s.eraser }));
-                ctx.request_repaint();
+                wake();
             });
             if let Err(e) = installed {
                 log::warn!("{e}");
@@ -133,7 +142,9 @@ fn run(android: AndroidApp) -> Result<(), String> {
                 font_outcome,
                 touch,
                 layout,
-                pen_path: Vec::new(),
+                pen_path: Default::default(),
+                paced,
+                frame_start: std::time::Instant::now(),
                 toggled_from: None,
                 last_ime: None,
                 ime_hidden: false,
@@ -164,24 +175,59 @@ fn enable_stroke_trace(app: &mut PhotocraftApp, android: &AndroidApp) {
     }
 }
 
-/// Latency experiments: the `present` file beside the `stroke-trace` flag sets the swap chain's
-/// frame latency and vsync (see [`crate::present`]). Returns how frames are presented, for the
-/// trace.
-fn present_settings(options: &mut eframe::NativeOptions, android: &AndroidApp) -> String {
+/// How frames reach the screen. With `low_latency` (Touch Input Settings, on by default) they
+/// don't wait for the display: wgpu takes the first of Immediate, Mailbox and Fifo the driver
+/// offers, which on Android is Mailbox with Vulkan (the screen shows the newest frame at each
+/// refresh; no tearing) and a swap interval of 0 with OpenGL ES. For latency experiments, the
+/// `present` file beside the `stroke-trace` flag overrides that and sets the swap chain's frame
+/// latency (see [`crate::present`]). Returns how frames are presented, for the trace, and whether
+/// the app paces its own frames (it does unless they wait for the display).
+fn present_settings(options: &mut eframe::NativeOptions, android: &AndroidApp, low_latency: bool) -> (String, bool) {
     let surface = &mut options.wgpu_options.surface;
     let text = android.external_data_path().and_then(|dir| std::fs::read_to_string(dir.join("present")).ok());
     let (present, problems) = crate::present::parse(text.as_deref().unwrap_or_default());
     for p in problems {
         log::warn!("{p}");
     }
-    if let Some(vsync) = present.vsync {
-        surface.present_mode = if vsync { eframe::wgpu::PresentMode::Fifo } else { eframe::wgpu::PresentMode::AutoNoVsync };
+    let vsync = present.vsync.unwrap_or(!low_latency);
+    if !vsync {
+        surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+    } else if present.vsync.is_some() {
+        surface.present_mode = eframe::wgpu::PresentMode::Fifo;
     }
     surface.desired_maximum_frame_latency = present.latency.or(surface.desired_maximum_frame_latency);
     let latency = surface.desired_maximum_frame_latency.map_or("default".to_string(), |n| n.to_string());
     let description = format!("{:?}, latency {latency}", surface.present_mode);
     log::info!("presentation: {description}");
-    description
+    (description, !vsync)
+}
+
+/// Asks egui for a frame from a thread of its own: the returned function only sets a flag and
+/// wakes that thread, so it never waits, whoever calls it (see where it's made).
+fn background_waker(ctx: egui::Context) -> impl Fn() + Clone + Send + Sync + 'static {
+    let wanted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = wanted.clone();
+    let spawned = std::thread::Builder::new().name("frame-waker".into()).spawn(move || {
+        loop {
+            std::thread::park();
+            if flag.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                ctx.request_repaint();
+            }
+        }
+    });
+    let thread = match spawned {
+        Ok(handle) => Some(handle.thread().clone()),
+        Err(e) => {
+            log::warn!("no frame-waker thread ({e}): the pen's samples wait for the touch events");
+            None
+        }
+    };
+    move || {
+        if let Some(thread) = &thread {
+            wanted.store(true, std::sync::atomic::Ordering::Release);
+            thread.unpark();
+        }
+    }
 }
 
 /// A named section on Perfetto's timeline, when a trace is running (`adb shell perfetto`).
@@ -234,8 +280,13 @@ struct Shell {
     scrolled_for: Option<(egui::Id, f32)>,
     /// The tool a pen button's "Switch to Eraser and back" left, to return to.
     toggled_from: Option<photocraft_ui_egui::Tool>,
-    /// Pen sample positions not yet put into a frame (see [`crate::pen_path`]).
-    pen_path: Vec<(f32, f32)>,
+    /// The pen's samples on their way into frames (see [`crate::pen_path`]).
+    pen_path: crate::pen_path::PenPath,
+    /// Frames don't wait for the display, so the app paces them (see [`crate::pace`]).
+    paced: bool,
+    /// When this frame started (after its turn came), for the pacing and for Android's
+    /// performance hints.
+    frame_start: std::time::Instant,
     /// Phone or tablet layout (see [`crate::layout`]).
     layout: crate::layout::Layout,
     /// Where the last frame drew everything (see [`crate::touch::Snapshot`]).
@@ -370,6 +421,32 @@ impl Shell {
 }
 
 impl Shell {
+    /// Frames that don't wait for the display are paced here (see [`crate::pace`]): a frame with
+    /// input, or soon after some, starts at most twice per refresh; any other waits for the
+    /// display's next turn, or starts at once when input arrives. `has_events`: this frame has
+    /// input of its own.
+    fn wait_for_turn(&mut self, has_events: bool) {
+        use photocraft_tablet::android;
+        if self.paced {
+            let seen = android::input_seq();
+            let hz = android::refresh_rate_hz();
+            let active = has_events || android::input_within(crate::pace::ACTIVE_FOR);
+            let wait = crate::pace::wait(self.frame_start.elapsed(), hz, active);
+            if !wait.is_zero() {
+                if active {
+                    std::thread::sleep(wait);
+                } else if android::wait_for_input(seen, wait) {
+                    // Input came in: only the short pause between input frames is still owed.
+                    let wait = crate::pace::wait(self.frame_start.elapsed(), hz, true);
+                    if !wait.is_zero() {
+                        std::thread::sleep(wait);
+                    }
+                }
+            }
+        }
+        self.frame_start = std::time::Instant::now();
+    }
+
     /// What the Activity draws a stroke with while it's drawn (Touch Input › Low latency ink):
     /// a plain line in the brush's colour and on-screen width, over the canvas. None while it's
     /// off or the stroke wouldn't simply paint (another tool, the eraser, a modifier held).
@@ -423,6 +500,7 @@ impl eframe::App for Shell {
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.wait_for_turn(!raw_input.events.is_empty());
         // The on-screen keyboard takes the bottom of the window: the app lays out in what's left
         // above it (panels, menus and dialogs alike), as apps that resize for the keyboard do.
         let ime = photocraft_tablet::android::ime_height_px() / ctx.pixels_per_point();
@@ -562,20 +640,12 @@ impl eframe::App for Shell {
             screen: ctx.content_rect(),
             now: raw_input.time.unwrap_or_else(|| ctx.input(|i| i.time)),
         };
-        // Every pen sample's position, not just each event's latest (see `pen_path`). Samples
-        // wait for a frame with the pen's touch in it; a new touch-down drops older ones.
+        // Every pen sample's position, not just each event's latest, and as soon as the pen hook
+        // has it, whether or not winit's own event for it is in yet (see `pen_path`). Taken here,
+        // after this frame's turn came, so they are as new as can be.
         let is_pen = |id: egui::TouchId| matches!(android::pointer_tool(id.0), Some(motion::tool::STYLUS | motion::tool::ERASER));
-        if raw_input.events.iter().any(|e| matches!(e, egui::Event::Touch { id, phase: egui::TouchPhase::Start, .. } if is_pen(*id))) {
-            self.pen_path.clear();
-        }
-        self.pen_path.extend(android::take_pen_path());
-        if self.pen_path.len() > 480 {
-            let extra = self.pen_path.len() - 480;
-            self.pen_path.drain(..extra);
-        }
-        if crate::pen_path::splice(&mut raw_input.events, &self.pen_path, ctx.pixels_per_point(), is_pen) > 0 {
-            self.pen_path.clear();
-        }
+        let samples = android::take_pen_path();
+        self.pen_path.frame(&mut raw_input.events, samples.stroke, samples.points, ctx.pixels_per_point(), is_pen);
         // Taps on the text bar (drawn over the app last frame) never reach the app: a tap
         // anywhere else would take the focus from the field it edits.
         let bar = self.text_bar.clone();
@@ -811,5 +881,8 @@ impl eframe::App for Shell {
         if photocraft_tablet::android::set_ink(self.ink_style(ui.ctx()), self.app.canvas_dragging()) {
             ui.ctx().request_repaint();
         }
+        // How long this frame took to build (tessellating and handing it to the GPU come after,
+        // and take about half as long again), for Android's performance hints.
+        photocraft_tablet::android::report_frame_work(self.frame_start.elapsed().mul_f32(1.5));
     }
 }

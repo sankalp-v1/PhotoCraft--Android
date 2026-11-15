@@ -86,8 +86,18 @@ fn finger_sample(action: i32, pressure: f32, size: f32, major: f32) -> Option<Up
 static HELD: Mutex<[bool; 4]> = Mutex::new([false; 4]);
 static PRESSES: Mutex<Vec<Press>> = Mutex::new(Vec::new());
 /// Where the pen touched in each move sample (historical ones included), window pixels, since
-/// [`take_pen_path`].
-static PATH: Mutex<Vec<(f32, f32)>> = Mutex::new(Vec::new());
+/// [`take_pen_path`], and which stroke they belong to.
+static PATH: Mutex<PenSamples> = Mutex::new(PenSamples { stroke: 0, points: Vec::new() });
+
+/// The pen's positions since they were last taken. A touch-down drops the samples before it, so
+/// they are all of one stroke.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PenSamples {
+    /// Counts the pen's touch-downs: the stroke these positions belong to.
+    pub stroke: u64,
+    /// Window pixels, oldest first; a stroke's first is where the pen touched down.
+    pub points: Vec<(f32, f32)>,
+}
 /// The most [`PATH`] holds (a second of a fast digitizer, if nothing takes it).
 const PATH_MAX: usize = 480;
 /// Whether the hovering pen's last sample erased, so hover moves send only changes.
@@ -219,6 +229,102 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeI
     INK_IDLE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// ---- Frame pacing and performance hints --------------------------------------------------------
+//
+// With frames that don't wait for the display (the app's low latency presentation), the app
+// paces its own frames: quickly while the pen or a finger is at work, at the display's rate
+// otherwise. The Activity says how fast the display refreshes and is told which thread draws
+// and how long its frames take, for Android's performance hints (CPU speed follows the work).
+
+/// Counts the input events the Activity passed on; a frame waiting for its turn is woken by one.
+static INPUT: (Mutex<InputClock>, std::sync::Condvar) = (Mutex::new(InputClock { seq: 0, last: None }), std::sync::Condvar::new());
+
+struct InputClock {
+    seq: u64,
+    last: Option<Instant>,
+}
+
+fn note_input() {
+    let mut clock = INPUT.0.lock().unwrap_or_else(PoisonError::into_inner);
+    clock.seq = clock.seq.wrapping_add(1);
+    clock.last = Some(Instant::now());
+    drop(clock);
+    INPUT.1.notify_all();
+}
+
+/// A number that changes with every touch, pen, mouse or wheel event the Activity passes on.
+pub fn input_seq() -> u64 {
+    INPUT.0.lock().unwrap_or_else(PoisonError::into_inner).seq
+}
+
+/// Whether an input event arrived within `d`.
+pub fn input_within(d: Duration) -> bool {
+    INPUT.0.lock().unwrap_or_else(PoisonError::into_inner).last.is_some_and(|t| t.elapsed() <= d)
+}
+
+/// Wait up to `timeout` for an input event after the one numbered `seen` ([`input_seq`]).
+/// Returns whether one arrived.
+pub fn wait_for_input(seen: u64, timeout: Duration) -> bool {
+    let clock = INPUT.0.lock().unwrap_or_else(PoisonError::into_inner);
+    if clock.seq != seen {
+        return true;
+    }
+    let (clock, _) = INPUT.1.wait_timeout_while(clock, timeout, |c| c.seq == seen).unwrap_or_else(PoisonError::into_inner);
+    clock.seq != seen
+}
+
+/// The display's refresh rate in thousandths of a hertz (0: not reported yet).
+static REFRESH_MILLIHZ: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// The kernel's id of the thread that draws the app's frames (0: not known yet).
+static RENDER_TID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// How long the app's latest frame took to prepare (nanoseconds; 0: none since it was last read).
+static FRAME_WORK_NS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// The display's refresh rate (Hz), once the Activity has reported it.
+pub fn refresh_rate_hz() -> Option<f32> {
+    let m = REFRESH_MILLIHZ.load(std::sync::atomic::Ordering::Relaxed);
+    (m > 0).then(|| m as f32 / 1000.0)
+}
+
+/// The calling thread draws the app's frames: the Activity raises its priority and asks Android
+/// to keep its CPU fast while frames are slow. Its id is read from `/proc/thread-self`, a link to
+/// `<process>/task/<thread>`.
+pub fn mark_render_thread() {
+    if RENDER_TID.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        return;
+    }
+    let tid = std::fs::read_link("/proc/thread-self").ok().and_then(|p| p.file_name()?.to_str()?.parse::<i32>().ok());
+    if let Some(tid) = tid.filter(|t| *t > 0) {
+        RENDER_TID.store(tid, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The time the frame just drawn took to prepare, for Android's performance hints.
+pub fn report_frame_work(work: Duration) {
+    let ns = i64::try_from(work.as_nanos()).unwrap_or(i64::MAX).max(1);
+    FRAME_WORK_NS.store(ns, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The display's refresh rate changed (or was first read), from `PhotoCraftActivity`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeRefreshRate(_env: *mut c_void, _this: *mut c_void, hz: f32) {
+    let millihz = if hz.is_finite() && (1.0..=1000.0).contains(&hz) { (hz * 1000.0).round() as i32 } else { 0 };
+    REFRESH_MILLIHZ.store(millihz, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The thread that draws the frames (see [`mark_render_thread`]), or 0 before its first frame.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeRenderTid(_env: *mut c_void, _this: *mut c_void) -> i32 {
+    RENDER_TID.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How long the latest frame took to prepare, in nanoseconds; 0 when no frame was drawn since
+/// the last call.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeFrameWork(_env: *mut c_void, _this: *mut c_void) -> i64 {
+    FRAME_WORK_NS.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The on-screen keyboard's height in window pixels (0 when it's hidden).
 static IME_HEIGHT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
@@ -325,8 +431,9 @@ pub fn last_buttons() -> i32 {
 /// The pen's positions (window pixels, oldest first) for every move sample since the last call,
 /// the ones Android batched between events included. winit passes on only each event's
 /// latest position, so a quick curve would be drawn from a few straight pieces.
-pub fn take_pen_path() -> Vec<(f32, f32)> {
-    std::mem::take(&mut *PATH.lock().unwrap_or_else(PoisonError::into_inner))
+pub fn take_pen_path() -> PenSamples {
+    let mut path = PATH.lock().unwrap_or_else(PoisonError::into_inner);
+    PenSamples { stroke: path.stroke, points: std::mem::take(&mut path.points) }
 }
 
 /// How old the pen's samples have become now, since the last call (see [`InputAges`]): the
@@ -341,13 +448,20 @@ fn track_path(action: i32, tool_type: i32, x: f32, y: f32) {
     }
     let mut path = PATH.lock().unwrap_or_else(PoisonError::into_inner);
     match action {
-        // A new contact: earlier samples belong to the last stroke.
-        motion::action::DOWN => path.clear(),
-        motion::action::MOVE if x.is_finite() && y.is_finite() => {
-            if path.len() >= PATH_MAX {
-                path.remove(0);
+        // A new contact (the pen alone, or beside a resting palm): earlier samples belong to the
+        // last stroke, and where it touched down is the stroke's first sample.
+        motion::action::DOWN | motion::action::POINTER_DOWN => {
+            path.stroke = path.stroke.wrapping_add(1);
+            path.points.clear();
+            if x.is_finite() && y.is_finite() {
+                path.points.push((x, y));
             }
-            path.push((x, y));
+        }
+        motion::action::MOVE if x.is_finite() && y.is_finite() => {
+            if path.points.len() >= PATH_MAX {
+                path.points.remove(0);
+            }
+            path.points.push((x, y));
         }
         _ => {}
     }
@@ -445,6 +559,7 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeP
         POINTERS.lock().unwrap_or_else(PoisonError::into_inner).down(id, tool_type, buttons);
     }
     saw_pen(tool_type);
+    note_input();
 }
 
 /// A mouse wheel or trackpad scroll since the last [`take_scroll`]: where the pointer was
@@ -475,6 +590,7 @@ fn add_scroll(x: f32, y: f32, h: f32, v: f32) {
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeScroll(_env: *mut c_void, _this: *mut c_void, x: f32, y: f32, h: f32, v: f32) {
     add_scroll(x, y, h, v);
+    note_input();
     layout_changed();
 }
 
@@ -526,6 +642,7 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeP
     major: f32,
 ) {
     saw_pen(tool);
+    note_input();
     track_age(action, tool, age_ms);
     track_controls(action, tool, buttons, x, y);
     track_path(action, tool, x, y);

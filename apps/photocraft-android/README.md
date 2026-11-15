@@ -28,6 +28,36 @@ PhotoCraftActivity.java (extends GameActivity)       libphotocraft_android.so (t
   which switches to the Eraser tool as on the desktop. Samples feed the same `StylusFeed` as
   the desktop tablet monitors, so Pen Pressure/Tilt brush dynamics, Preferences › Tools › Use
   Tablet Pressure and the pressure curve all apply.
+- **Low latency drawing** (Touch Input Settings › Pen, on by default; applies at the next
+  start; #11): three things that together take one to two screen refreshes off the time from
+  pen to pixel.
+  - *Frames don't queue behind the display.* Presented with vsync, every frame joined a queue:
+    a pen reports 240 positions a second, each asks for a frame, and egui draws one more after
+    any frame with input, so the app always had more frames ready than the screen could show.
+    The queue stayed full and the screen showed a frame two or three refreshes old (measured on
+    a Galaxy Tab S10 FE at 90 Hz: 34 ms from the start of a frame to the screen, 23 ms of it in
+    the queue, which SurfaceFlinger reports as "buffer stuffing"). Now the swap chain takes the
+    newest frame at each refresh (Vulkan's mailbox mode; a swap interval of 0 on OpenGL ES;
+    Android composites, so nothing tears), and the app paces itself (`src/pace.rs`): twice per
+    refresh (120 to 240 frames a second) while the pen, a finger or a mouse is at work, the display's own rate for
+    anything else (an animation, a spinner), and an idle app still draws nothing.
+  - *The pen's samples are the stroke* (`src/pen_path.rs`). The Activity's pen hook has each
+    sample before winit has its touch event. A frame now draws every sample that has arrived,
+    whether or not winit's event for it is in yet, and drops winit's own moves (the same
+    positions, later): no frame is spent drawing nothing while its sample waits for the next
+    one, and a late move can't pull the stroke back. A stroke whose samples don't agree with
+    winit's positions falls back to winit's moves.
+  - *The frame itself is quicker.* The thread that draws gets a display thread's priority
+    (GameActivity starts it as an ordinary one), Android's performance hints (Android 12+) keep
+    its CPU core fast while a stroke's frames take long, and the display is asked for its
+    fastest refresh rate at its current resolution (some tablets run apps they don't know at
+    60 Hz). The Activity's thread, which delivers the pen's samples, no longer waits for egui's
+    lock to ask for a frame (a frame being drawn holds it for milliseconds at a time): a small
+    thread of the app's does the asking.
+
+  Turned off, frames wait for the display as before (vsync), the display keeps the rate Android
+  gives it and the drawing thread its priority. For measurements, the `present` file
+  (`docs/development.md`) still overrides the presentation: `mode=fifo` or `mode=novsync`.
 - **Files:** File › Open and Save As show Android's document pickers. Picked documents are copied
   into app-private storage and opened from there. Saving writes the private copy, then the
   Activity copies it back to the document (when the provider grants write access; otherwise a
@@ -257,7 +287,7 @@ On a Windows host with the `x86_64-pc-windows-gnu` Rust toolchain: build scripts
 ## Tests
 
 ```bash
-cargo test -p photocraft-android -p photocraft-tablet   # bridge, services, MotionEvent mapping
+cargo test -p photocraft-android -p photocraft-tablet   # bridge, services, MotionEvent mapping, pen path, frame pacing
 cargo test -p photocraft-ui-egui --lib stylus           # feed/touch-force precedence
 ```
 

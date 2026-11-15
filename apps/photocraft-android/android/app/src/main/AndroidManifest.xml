@@ -17,15 +17,23 @@
         android:theme="@style/Theme.PhotoCraft"
         android:largeHeap="true"
         android:resizeableActivity="true"
+        android:appCategory="productivity"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules">
 
+        <!-- configChanges lists every change Android would otherwise restart the Activity for
+             (a keyboard or mouse attached, the system font size, language or bold text changed,
+             a SIM swapped, DeX): a restarted Activity can't start the Rust app again in the same
+             process (winit's event loop exists once), so a restart would end the session. The
+             app draws everything itself and needs none of them.
+             appCategory: not a game, though it runs on GameActivity; device makers' game
+             services cap the frame rate of what they take for one. -->
         <activity
             android:name=".PhotoCraftActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|touchscreen|mcc|mnc|locale|layoutDirection|fontScale|fontWeightAdjustment|colorMode|grammaticalGender"
             android:windowSoftInputMode="adjustResize">
 
             <!-- The Rust library GameActivity loads (libphotocraft_android.so). -->

@@ -177,6 +177,15 @@ pub(crate) fn phone_dialog_top_id() -> egui::Id {
     egui::Id::unique("phone-dialog-top")
 }
 
+/// How tall a bottom dialog of the phone layout may be in a window `screen_h` points tall: 40% of
+/// it, so the image stays in view above, but never so little that its body can't be worked in.
+/// On a short window (a phone on its side, or with the keyboard open) 40% left Layer Style a
+/// strip a few rows tall to scroll its options through (Android port #36); it gets 320 points
+/// where the window has them, and what room there is otherwise.
+pub(crate) fn bottom_dialog_height(screen_h: f32) -> f32 {
+    (screen_h * 0.4).max((screen_h - 80.0).min(320.0)).max(160.0)
+}
+
 /// A dialog whose work is judged on the canvas: Blur Gallery's pins, Layer Style, and the
 /// adjustments and filters that preview live. In the phone layout it sits at the bottom of the
 /// window with the image in view above it, and the panel sheet makes way (`panels::phone_dock`).
@@ -664,7 +673,17 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         // window tall, so the image stays in view above it.
         let on_canvas = phone && previews_on_canvas(&d);
         let screen_h = ctx.content_rect().height();
-        let phone_height = phone.then(|| if on_canvas { (screen_h * 0.4).max(160.0) } else { (screen_h - 40.0).max(120.0) });
+        // Layer Style, with a list and a page to work between, takes a little more of an upright
+        // phone (55%; Android port #36).
+        let layer_style = d.kind == DialogKind::LayerStyle;
+        let phone_height = phone.then(|| {
+            if on_canvas {
+                let h = bottom_dialog_height(screen_h);
+                if layer_style { h.max((screen_h * 0.55).min(screen_h - 80.0)) } else { h }
+            } else {
+                (screen_h - 40.0).max(120.0)
+            }
+        });
         let mut processor_alert = None;
         let mut fit_image_alert = None;
         let area = match start {
@@ -701,9 +720,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             (remembered.unwrap_or(size), min, resizable_max(ctx, &fields, min))
         });
         let mut given = None;
-        // Layer Style is a fixed size (not on a phone, where every dialog takes its width).
+        // Layer Style is a fixed size (not on a phone, where every dialog takes its width), and
+        // never bigger than the window: a tablet's split screen or a DeX window can be narrower
+        // than its three columns, and it then stacks them (`layer_style::narrow_body`).
         let fixed = (d.kind == DialogKind::LayerStyle && !phone)
-            .then(|| egui::vec2(800.0, 550.0).min((ctx.content_rect().size() - egui::vec2(40.0, 40.0)).max(egui::vec2(640.0, 360.0))));
+            .then(|| egui::vec2(800.0, 550.0).min(ctx.content_rect().size() - egui::vec2(40.0, 40.0)).max(egui::vec2(240.0, 240.0)));
         let modal = show_modal(modal, ctx, id, resize, fixed, interactive, outer_scroll, |ui| {
             sizing = ui.is_sizing_pass();
             let available = ui.available_size();
@@ -777,7 +798,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 fit_image_alert = fit_image_range::body(ui, &mut fields);
             } else {
                 // The body of a bottom dialog (phone layout) scrolls between its title and buttons.
-                let body_room = phone_height.filter(|_| on_canvas).map(|h| (h - 110.0).max(80.0));
+                // Layer Style has its OK and Cancel in its body: only the title is outside it.
+                let chrome = if layer_style { 64.0 } else { 110.0 };
+                let body_room = phone_height.filter(|_| on_canvas).map(|h| (h - chrome).max(80.0));
                 outcome = match body_room {
                     Some(h) => egui::ScrollArea::vertical()
                         .id_salt(id.with("phone-body"))

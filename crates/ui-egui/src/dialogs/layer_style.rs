@@ -936,24 +936,33 @@ pub fn body_with_response(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Ma
     // One size on every page (`dialogs::sizing_of`): the list and the page fill its height and
     // scroll when they are taller.
     let height = ui.available_height().max(160.0);
-    ui.horizontal_top(|ui| {
-        boxed(ui, LIST_W, height, |ui, h| {
-            egui::ScrollArea::vertical().id_salt("layer-style-effects").max_height(h - BAR_H).auto_shrink(false).show(ui, |ui| effect_list(ui, f, &selected));
-            list_bar(ui, f, &selected);
+    if ui.available_width() < NARROW_BELOW {
+        // A phone (Android port #36): the three columns don't fit side by side.
+        outcome = narrow_body(app, ui, f, &selected, invalid.as_deref(), &mut style_click, &mut new_style, height);
+    } else {
+        ui.horizontal_top(|ui| {
+            boxed(ui, LIST_W, height, |ui, h| {
+                egui::ScrollArea::vertical()
+                    .id_salt("layer-style-effects")
+                    .max_height(h - BAR_H)
+                    .auto_shrink(false)
+                    .show(ui, |ui| effect_list(ui, f, &selected));
+                list_bar(ui, f, &selected);
+            });
+            let page_w = ui.available_width() - SIDE_W - ui.spacing().item_spacing.x;
+            boxed(ui, page_w, height, |ui, h| {
+                egui::ScrollArea::vertical()
+                    .id_salt("layer-style-page")
+                    .max_height(h)
+                    .auto_shrink(false)
+                    .show(ui, |ui| page(app, ui, f, &selected, invalid.as_deref(), &mut style_click));
+            });
+            ui.vertical(|ui| {
+                ui.set_width(SIDE_W);
+                outcome = side_column(app, ui, f, &mut new_style);
+            });
         });
-        let page_w = ui.available_width() - SIDE_W - ui.spacing().item_spacing.x;
-        boxed(ui, page_w, height, |ui, h| {
-            egui::ScrollArea::vertical()
-                .id_salt("layer-style-page")
-                .max_height(h)
-                .auto_shrink(false)
-                .show(ui, |ui| page(app, ui, f, &selected, invalid.as_deref(), &mut style_click));
-        });
-        ui.vertical(|ui| {
-            ui.set_width(SIDE_W);
-            outcome = side_column(app, ui, f, &mut new_style);
-        });
-    });
+    }
     // Style swatch clicks apply to the layer (Photoshop does this immediately);
     // New Style… saves the dialog's pending state as a preset.
     if let Some(name) = style_click {
@@ -967,6 +976,97 @@ pub fn body_with_response(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Ma
         outcome = Some(true);
     }
     outcome
+}
+
+/// Narrower than this, Layer Style stacks its parts ([`narrow_body`]): the effect list, a page
+/// that can show its sliders, and the button column need about this much side by side.
+const NARROW_BELOW: f32 = LIST_W + SIDE_W + 300.0;
+
+/// Layer Style in a window too narrow for its three columns (a phone; Android port #36): OK,
+/// Cancel and New Style… in a row at the top, then either the effect list or the selected page,
+/// with tabs to switch, filling the rest. Picking an effect in the list shows its page. The
+/// canvas shows the style as it's edited, so the preview swatch is left out.
+#[allow(clippy::too_many_arguments)]
+fn narrow_body(
+    app: &mut PhotocraftApp,
+    ui: &mut egui::Ui,
+    f: &mut Map<String, Value>,
+    selected: &str,
+    invalid: Option<&str>,
+    style_click: &mut Option<String>,
+    new_style: &mut bool,
+    height: f32,
+) -> Option<bool> {
+    let mut outcome = None;
+    let top = ui.cursor().top();
+    let w = ui.available_width();
+    let gap = ui.spacing().item_spacing.x;
+    let button_w = ((w - 2.0 * gap) / 3.0).floor().max(40.0);
+    ui.horizontal(|ui| {
+        if widgets::primary_button(ui, tl!("OK"), button_w).clicked() {
+            outcome = Some(true);
+        }
+        if widgets::secondary_button(ui, tl!("Cancel"), button_w).clicked() {
+            outcome = Some(false);
+        }
+        if widgets::secondary_button(ui, tl!("New Style…"), button_w).clicked() {
+            *new_style = true;
+        }
+    });
+    ui.add_space(4.0);
+    let view_id = egui::Id::unique("layer-style-narrow-view");
+    let mut show_list = ui.data(|d| d.get_temp::<bool>(view_id)).unwrap_or(false);
+    ui.horizontal(|ui| {
+        if ui.selectable_label(show_list, tl!("Effects")).clicked() {
+            show_list = true;
+        }
+        let name = page_name(f, selected);
+        if ui.selectable_label(!show_list, tl!(name)).clicked() {
+            show_list = false;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut preview = f.get("preview").and_then(Value::as_bool).unwrap_or(true);
+            if widgets::checkbox(ui, &mut preview, tl!("Preview")).changed() {
+                f.insert("preview".into(), json!(preview));
+            }
+        });
+    });
+    ui.add_space(4.0);
+    let used = ui.cursor().top() - top;
+    // What's left of the room, less the boxes' frame, so nothing below them is cut off.
+    let rest = (height - used - 2.0).max(80.0);
+    if show_list {
+        boxed(ui, w, rest, |ui, h| {
+            egui::ScrollArea::vertical().id_salt("layer-style-effects").max_height(h - BAR_H).auto_shrink(false).show(ui, |ui| effect_list(ui, f, selected));
+            list_bar(ui, f, selected);
+        });
+        // A page picked in the list (a row, or a kind added with its checkbox) is shown at once.
+        if f.get("selected").and_then(Value::as_str).is_some_and(|now| now != selected) {
+            show_list = false;
+        }
+    } else {
+        boxed(ui, w, rest, |ui, h| {
+            egui::ScrollArea::vertical()
+                .id_salt("layer-style-page")
+                .max_height(h)
+                .auto_shrink(false)
+                .show(ui, |ui| page(app, ui, f, selected, invalid, style_click));
+        });
+    }
+    ui.data_mut(|d| d.insert_temp(view_id, show_list));
+    outcome
+}
+
+/// The name of page `selected` (Styles, Blending Options, or an effect's kind).
+fn page_name(f: &Map<String, Value>, selected: &str) -> &'static str {
+    match selected {
+        STYLES_PAGE => "Styles",
+        BLENDING => "Blending Options",
+        id => entry(f, id)
+            .and_then(|e| e.get("kind").and_then(Value::as_str).map(str::to_string))
+            .and_then(|kind| KINDS.iter().find(|k| k.0 == kind).map(|k| k.1))
+            .unwrap_or("Options"),
+    }
 }
 
 /// Colour channel names of a document mode, as Blending Options lists them (Channels, Blend If).

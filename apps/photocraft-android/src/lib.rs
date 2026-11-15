@@ -24,6 +24,7 @@ pub mod ime;
 pub mod keys;
 pub mod layout;
 pub mod mouse;
+pub mod pace;
 pub mod pad;
 pub mod pen_path;
 pub mod present;

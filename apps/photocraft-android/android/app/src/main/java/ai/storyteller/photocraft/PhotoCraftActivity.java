@@ -89,6 +89,13 @@ public class PhotoCraftActivity extends GameActivity {
     /** The screen's rounded corners: radius and centre of the top-left, top-right, bottom-right and bottom-left (0 radius: square). */
     private static native void nativeCorners(int r0, int x0, int y0, int r1, int x1, int y1, int r2, int x2, int y2, int r3, int x3, int y3);
 
+    /** The display's refresh rate (Hz), for the app's own frame pacing (photocraft-tablet's android.rs). */
+    private static native void nativeRefreshRate(float hz);
+    /** The kernel id of the thread that draws the app's frames (0 before its first frame). */
+    private static native int nativeRenderTid();
+    /** How long the app's latest frame took, in nanoseconds (0: none since the last call). */
+    private static native long nativeFrameWork();
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private File bridge;
@@ -108,6 +115,7 @@ public class PhotoCraftActivity extends GameActivity {
                 checkUpdateRequest();
                 checkClipboard();
                 checkStatusBar();
+                boostRenderThread();
             } catch (Exception e) {
                 Log.e(TAG, "bridge", e);
             }
@@ -137,6 +145,9 @@ public class PhotoCraftActivity extends GameActivity {
             pendingName = state.getString("pendingName", "");
         }
         applySystemBars();
+        lowLatency = lowLatencyWanted();
+        applyRefreshRate();
+        watchDisplay();
         // Draw under a front camera's cutout on every Android version, as Android 15 does for
         // apps targeting it; the menu and options bars split around the camera instead (#21).
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
@@ -227,6 +238,10 @@ public class PhotoCraftActivity extends GameActivity {
     protected void onResume() {
         super.onResume();
         applySystemBars();
+        applyRefreshRate();
+        // The drawing thread's priority is set again at the next poll (in case the system changed
+        // it while the app was away).
+        renderPrioritySet = false;
         handler.removeCallbacks(poll);
         handler.post(poll);
         updater.resumePendingInstall();
@@ -269,6 +284,14 @@ public class PhotoCraftActivity extends GameActivity {
      */
     @Override
     protected void onDestroy() {
+        if (displayListener != null) {
+            try {
+                ((android.hardware.display.DisplayManager) getSystemService(DISPLAY_SERVICE)).unregisterDisplayListener(displayListener);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "display listener", e);
+            }
+            displayListener = null;
+        }
         if (isFinishing()) {
             checkSync();
             io.shutdown();
@@ -352,6 +375,227 @@ public class PhotoCraftActivity extends GameActivity {
         return m;
     }
 
+    // ---- Speed ----------------------------------------------------------------------------
+    //
+    // Touch Input Settings › Low latency drawing (on by default; photocraft-android's pace.rs):
+    // the app's frames don't queue behind the display, so the rest is making each frame quick and
+    // the display fast. The display is asked for its highest refresh rate (some tablets run apps
+    // they don't know at 60 Hz), the thread that draws the frames gets a display thread's priority
+    // (GameActivity starts it as an ordinary thread, below an app's own drawing threads), and Android's
+    // performance hints (Android 12+) keep its CPU core fast while frames take long: a stroke
+    // starts from an idle CPU, which otherwise takes a while to speed up.
+
+    /** Touch Input Settings › Low latency drawing, read at start (it applies at the next start). */
+    private boolean lowLatency = true;
+    private boolean renderPrioritySet;
+    /** Android's performance hints for the drawing thread (Android 12+), or null. */
+    private Hints hints;
+    private boolean hintTried;
+    private long lastWorkReport;
+
+    /** A performance hint session, in a class of its own so that Android versions without
+     * PerformanceHintManager (before 12) never have to resolve it. */
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.S)
+    private static final class Hints {
+        private final android.os.PerformanceHintManager.Session session;
+        private long targetNs;
+
+        private Hints(android.os.PerformanceHintManager.Session session, long targetNs) {
+            this.session = session;
+            this.targetNs = targetNs;
+        }
+
+        /** A session for thread `tid`, or null where the device offers none. */
+        static Hints create(android.content.Context context, int tid, long targetNs) {
+            android.os.PerformanceHintManager manager = context.getSystemService(android.os.PerformanceHintManager.class);
+            android.os.PerformanceHintManager.Session session = manager == null ? null : manager.createHintSession(new int[]{tid}, targetNs);
+            return session == null ? null : new Hints(session, targetNs);
+        }
+
+        void target(long ns) {
+            if (ns != targetNs && ns > 0) {
+                session.updateTargetWorkDuration(ns);
+                targetNs = ns;
+            }
+        }
+
+        void report(long ns) {
+            session.reportActualWorkDuration(ns);
+        }
+    }
+    private float refreshHz;
+    private android.hardware.display.DisplayManager.DisplayListener displayListener;
+
+    /** The app's choice in files/touch-input.json (written by src/touch/config.rs): on unless false. */
+    private boolean lowLatencyWanted() {
+        File f = new File(getFilesDir(), "touch-input.json");
+        try {
+            return !f.isFile() || new JSONObject(readText(f)).optBoolean("low_latency_present", true);
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private android.view.Display display() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                android.view.Display d = getDisplay();
+                if (d != null) {
+                    return d;
+                }
+            }
+        } catch (RuntimeException e) {
+            // Not attached to a display yet: the default one.
+        }
+        return getWindowManager().getDefaultDisplay();
+    }
+
+    /** Ask for the display's fastest mode at its current resolution, and tell the app how fast
+     * the display refreshes. */
+    private void applyRefreshRate() {
+        try {
+            android.view.Display d = display();
+            if (d == null) {
+                return;
+            }
+            float hz = d.getRefreshRate();
+            if (lowLatency) {
+                android.view.Display.Mode current = d.getMode();
+                android.view.Display.Mode best = current;
+                for (android.view.Display.Mode m : d.getSupportedModes()) {
+                    if (m.getPhysicalWidth() == current.getPhysicalWidth() && m.getPhysicalHeight() == current.getPhysicalHeight()
+                            && m.getRefreshRate() > best.getRefreshRate() + 0.5f) {
+                        best = m;
+                    }
+                }
+                android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+                if (lp.preferredDisplayModeId != best.getModeId()) {
+                    lp.preferredDisplayModeId = best.getModeId();
+                    getWindow().setAttributes(lp);
+                    Log.i(TAG, "display: asking for " + best.getRefreshRate() + " Hz (now " + hz + " Hz)");
+                }
+                hz = Math.max(hz, best.getRefreshRate());
+            }
+            if (hz != refreshHz) {
+                refreshHz = hz;
+                try {
+                    nativeRefreshRate(hz);
+                } catch (UnsatisfiedLinkError err) {
+                    // The library isn't loaded yet: the next call tells it.
+                    refreshHz = 0;
+                }
+                retargetHints();
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "refresh rate", e);
+        }
+    }
+
+    /** The display's mode changed (a refresh rate switch, a fold, an external screen). */
+    private void watchDisplay() {
+        try {
+            android.hardware.display.DisplayManager dm = (android.hardware.display.DisplayManager) getSystemService(DISPLAY_SERVICE);
+            if (dm == null) {
+                return;
+            }
+            displayListener = new android.hardware.display.DisplayManager.DisplayListener() {
+                @Override
+                public void onDisplayAdded(int id) {
+                }
+
+                @Override
+                public void onDisplayRemoved(int id) {
+                }
+
+                @Override
+                public void onDisplayChanged(int id) {
+                    applyRefreshRate();
+                }
+            };
+            dm.registerDisplayListener(displayListener, handler);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "display listener", e);
+        }
+    }
+
+    /** Half a refresh: what a frame should take at most, with room to spare. */
+    private long hintTarget() {
+        float hz = refreshHz >= 24f && refreshHz <= 480f ? refreshHz : 60f;
+        return (long) (1e9 / hz / 2);
+    }
+
+    private void retargetHints() {
+        if (hints == null || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) {
+            return;
+        }
+        try {
+            hints.target(hintTarget());
+        } catch (RuntimeException e) {
+            Log.w(TAG, "performance hints", e);
+        }
+    }
+
+    /** Once the app's drawing thread is known: a display thread's priority, and a performance
+     * hint session for it. Called from the poll, so it costs nothing while there's nothing to do. */
+    private void boostRenderThread() {
+        if (!lowLatency || (renderPrioritySet && hintTried)) {
+            return;
+        }
+        int tid;
+        try {
+            tid = nativeRenderTid();
+        } catch (UnsatisfiedLinkError err) {
+            return;
+        }
+        if (tid <= 0) {
+            return;
+        }
+        if (!renderPrioritySet) {
+            renderPrioritySet = true;
+            try {
+                android.os.Process.setThreadPriority(tid, android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "render thread priority", e);
+            }
+        }
+        if (!hintTried) {
+            hintTried = true;
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                try {
+                    hints = Hints.create(this, tid, hintTarget());
+                    Log.i(TAG, "performance hints: " + (hints == null ? "not offered by this device" : "on for thread " + tid));
+                } catch (RuntimeException | LinkageError e) {
+                    Log.w(TAG, "performance hints", e);
+                }
+            }
+        }
+    }
+
+    /** With input arriving: tell Android how long the app's frames take, so it speeds the CPU up
+     * while they are slow (at most once per frame; the call doesn't wait for the system). */
+    private void reportFrameWork() {
+        if (hints == null || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) {
+            return;
+        }
+        long now = SystemClock.uptimeMillis();
+        if (now - lastWorkReport < 4) {
+            return;
+        }
+        lastWorkReport = now;
+        try {
+            long work = nativeFrameWork();
+            if (work > 0) {
+                hints.report(Math.min(work, 1_000_000_000L));
+            }
+        } catch (UnsatisfiedLinkError err) {
+            // The library isn't loaded.
+        } catch (RuntimeException e) {
+            Log.w(TAG, "performance hints", e);
+            hints = null;
+        }
+    }
+
     // ---- Pen ------------------------------------------------------------------------------
 
     @Override
@@ -380,12 +624,24 @@ public class PhotoCraftActivity extends GameActivity {
             }
         }
         MotionEvent local = inApp(e);
-        inkEvent(local);
+        try {
+            inkEvent(local);
+        } catch (RuntimeException | LinkageError err) {
+            // The ink layer failed (its surface went away mid-stroke, a device without what it
+            // needs): the stroke goes on without it, drawn by the app as always.
+            Log.w(TAG, "low latency ink", err);
+            inkPointer = -1;
+        }
         forwardPen(local);
-        followPointerIcon(local);
+        try {
+            followPointerIcon(local);
+        } catch (RuntimeException err) {
+            Log.w(TAG, "pointer icon", err);
+        }
         if (local != e) {
             local.recycle();
         }
+        reportFrameWork();
         return super.dispatchTouchEvent(e);
     }
 
@@ -469,7 +725,9 @@ public class PhotoCraftActivity extends GameActivity {
         } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN) {
             // Cancelled, or a second finger: a gesture, not a stroke.
             inkPointer = -1;
-            ink.clear();
+            if (ink != null && ink.isValid()) {
+                ink.clear();
+            }
         }
     }
 
@@ -502,7 +760,7 @@ public class PhotoCraftActivity extends GameActivity {
 
     private void inkTo(float x, float y, float pressure) {
         float width = nativeInkWidth(pressure);
-        if (width > 0f) {
+        if (width > 0f && !Float.isNaN(x) && !Float.isNaN(y)) {
             ink.renderFrontBufferedLayer(new InkSegment(inkX, inkY, x, y, width));
         }
         inkX = x;
@@ -522,7 +780,13 @@ public class PhotoCraftActivity extends GameActivity {
                 now = idle;
             }
             if (now >= idle || SystemClock.uptimeMillis() >= deadline) {
-                ink.clear();
+                try {
+                    if (ink != null && ink.isValid()) {
+                        ink.clear();
+                    }
+                } catch (RuntimeException err) {
+                    Log.w(TAG, "low latency ink", err);
+                }
             } else {
                 inkClearAfter(stroke, idle, deadline);
             }
@@ -543,10 +807,15 @@ public class PhotoCraftActivity extends GameActivity {
         }
         MotionEvent local = inApp(e);
         forwardPen(local);
-        followPointerIcon(local);
+        try {
+            followPointerIcon(local);
+        } catch (RuntimeException err) {
+            Log.w(TAG, "pointer icon", err);
+        }
         if (local != e) {
             local.recycle();
         }
+        reportFrameWork();
         return super.dispatchGenericMotionEvent(e);
     }
 
@@ -649,11 +918,27 @@ public class PhotoCraftActivity extends GameActivity {
         if (pendingId != -1 || !f.isFile()) {
             return;
         }
-        JSONObject r = new JSONObject(readText(f));
+        JSONObject r;
+        long id = -1;
+        String kind;
+        try {
+            r = new JSONObject(readText(f));
+            id = r.getLong("id");
+            kind = r.getString("kind");
+        } catch (Exception e) {
+            // A request that can't be read would be tried again every poll, for ever, and no
+            // picker would open again: drop it, and answer it when its id is known, so the app
+            // doesn't wait for a picker that never comes.
+            Log.e(TAG, "unreadable request", e);
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            if (id != -1) {
+                answerError(id, "unreadable request");
+            }
+            return;
+        }
         //noinspection ResultOfMethodCallIgnored
         f.delete();
-        long id = r.getLong("id");
-        String kind = r.getString("kind");
         Intent intent;
         int code;
         if ("open".equals(kind)) {

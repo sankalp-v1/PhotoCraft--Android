@@ -175,6 +175,13 @@ impl TouchInput {
                     ui.checkbox(&mut c.long_press_right_click, "Hold a finger still to right-click (context menus, closing panels)");
                     ui.separator();
                     ui.strong("Pen");
+                    ui.checkbox(&mut c.low_latency_present, "Low latency drawing: frames don't wait in line for the screen");
+                    ui.label(
+                        egui::RichText::new(
+                            "Each refresh shows the newest frame instead of one drawn two or three refreshes ago, and the display runs at its fastest rate. Applies the next time PhotoCraft starts.",
+                        )
+                        .color(tk.text_dim),
+                    );
                     ui.checkbox(&mut c.low_latency_ink, "Low latency ink (experimental): the line appears under the pen sooner");
                     ui.label(
                         egui::RichText::new("While you draw with the Brush or Pencil, a plain line in the brush's colour is drawn straight to the screen, then the real stroke replaces it.")
