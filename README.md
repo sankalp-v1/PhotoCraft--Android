@@ -28,8 +28,6 @@
   (the main fixes: [commit 5ab3ce9](https://github.com/sankalp-v1/PhotoCraft--Android/commit/5ab3ce979b150d34e2bed1cc277ad168d93fbc05)).
 - 📄 Their original README is kept, unchanged, in [`UPSTREAM-README.md`](UPSTREAM-README.md):
   read it for the full feature tour, how-tos and screenshots 📸.
-- ⚖️ License: the same as the original, **MIT or Apache-2.0** ([`LICENSE-MIT`](LICENSE-MIT),
-  [`LICENSE-APACHE`](LICENSE-APACHE), [`NOTICE`](NOTICE), [`ATTRIBUTION.md`](ATTRIBUTION.md)).
 - 🚫 Not made, supported or endorsed by morte2437, the PhotoCraft developers or ArtCraft.
   Please report problems with **this** build here, not to them.
 
