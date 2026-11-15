@@ -1,4 +1,4 @@
-# 🎨 PhotoCraft for Android — Smooth Pen Edition ✒️⚡
+# 🎨 PhotoCraft for Android — Smooth Pen Edition⚡
 
 ### A desktop-class image editor on your Android **tablet** 📲, now with lower pen lag and a Layer Style dialog that fits every screen.
 
