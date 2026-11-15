@@ -26,9 +26,10 @@
 | 🎨 **ArtCraft team & PhotoCraft contributors** | Created PhotoCraft, the editor itself | [storytold/photocraft](https://github.com/storytold/photocraft) |
 | 🛠️ **This fork** | Lower pen lag, Layer Style fixes, crash hardening (see below) | you are here |
 
-- 📥 The first commit in this repo is morte2437's code **exactly as they published it**
-  (branch `android-port`, commit `e4258e9`, version 0.23.1-1), credited to them as its author.
-- 🔧 The commits after it are this fork's changes, so you can see every line that changed.
+- 📥 The first commit is the **base**: morte2437's port as they published it (branch
+  `android-port`, commit `e4258e9`, version 0.23.1-1).
+- 🔧 The commits after it are **this version's fixes**, so you can see every line that changed
+  (the main fixes: [commit 5ab3ce9](https://github.com/sankalp-v1/PhotoCraft--Android/commit/5ab3ce979b150d34e2bed1cc277ad168d93fbc05)).
 - 📄 Their original README is kept, unchanged, in [`UPSTREAM-README.md`](UPSTREAM-README.md):
   read it for the full feature tour, how-tos and screenshots 📸.
 - ⚖️ License: the same as the original, **MIT or Apache-2.0** ([`LICENSE-MIT`](LICENSE-MIT),
