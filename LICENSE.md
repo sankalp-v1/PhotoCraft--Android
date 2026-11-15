@@ -1,3 +1,5 @@
+Required Notice: Copyright (c) 2026 Sankalp Gajbhiye (https://github.com/sankalp-v1/PhotoCraft--Android)
+
 # PolyForm Noncommercial License 1.0.0
 
 <https://polyformproject.org/licenses/noncommercial/1.0.0>

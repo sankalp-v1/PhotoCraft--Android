@@ -26,9 +26,9 @@
   `android-port`, commit `e4258e9`, version 0.23.1-1).
 - 🔧 The commits after it are **this version's fixes**, so you can see every line that changed
   (the main fixes: [commit 5ab3ce9](https://github.com/sankalp-v1/PhotoCraft--Android/commit/5ab3ce979b150d34e2bed1cc277ad168d93fbc05)).
-- 📄 Their original README is kept, unchanged, in [`UPSTREAM-README.md`](UPSTREAM-README.md):
+- 📄 Their original README is kept in [`UPSTREAM-README.md`](UPSTREAM-README.md) (only its license links now point to `original-licenses/`):
   read it for the full feature tour, how-tos and screenshots 📸.
-- ⚖️ License: see the **License** section below and [`LICENSE`](LICENSE).
+- ⚖️ License: see the **License** section below and [`LICENSE.md`](LICENSE.md).
 - 🚫 Not made, supported or endorsed by morte2437, the PhotoCraft developers or ArtCraft.
   Please report problems with **this** build here, not to them.
 
@@ -160,10 +160,10 @@ More in [`apps/photocraft-android/README.md`](apps/photocraft-android/README.md)
 
 | 🧩 Part | 📜 Terms |
 |---|---|
-| 🛠️ **This version's own work** by Sankalp Gajbhiye (everything added or changed after the base commit: the pen, Layer Style and stability fixes, docs, README) | 🚫💰 **[PolyForm Noncommercial 1.0.0](LICENSE-POLYFORM-NONCOMMERCIAL.md)**: free for personal, hobby, study and non-profit use, **no commercial use**, and the copyright notice must stay. No one may pass it off as their own. |
-| 🎨 **The original code** (PhotoCraft by the ArtCraft team & contributors, Android port by morte2437) | ✅ Unchanged: **MIT or Apache-2.0** ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE), [`NOTICE`](NOTICE), [`ATTRIBUTION.md`](ATTRIBUTION.md)) |
+| 🛠️ **This version's own work** by Sankalp Gajbhiye (everything added or changed after the base commit: the pen, Layer Style and stability fixes, docs, README) | 🚫💰 **[PolyForm Noncommercial 1.0.0](LICENSE.md)**: free for personal, hobby, study and non-profit use, **no commercial use**, and the copyright notice must stay. No one may pass it off as their own. |
+| 🎨 **The original code** (PhotoCraft by the ArtCraft team & contributors, Android port by morte2437) | ✅ Unchanged: **MIT or Apache-2.0** ([`LICENSE-MIT`](original-licenses/LICENSE-MIT), [`LICENSE-APACHE`](original-licenses/LICENSE-APACHE), [`NOTICE`](NOTICE), [`ATTRIBUTION.md`](ATTRIBUTION.md)) |
 
-📄 Full details: [`LICENSE`](LICENSE). Copyright © 2026 Sankalp Gajbhiye.
+📄 Full details: [`LICENSE.md`](LICENSE.md) and [`original-licenses/`](original-licenses/). Copyright © 2026 Sankalp Gajbhiye.
 
 ---
 

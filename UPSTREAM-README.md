@@ -60,8 +60,8 @@ of it; for the official desktop and web app, see the original repository.
 ## License and credits
 
 Based on PhotoCraft, Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, licensed
-under the MIT License or the Apache License 2.0, at your option ([LICENSE-MIT](LICENSE-MIT),
-[LICENSE-APACHE](LICENSE-APACHE)). The Android port's changes are under the same terms.
+under the MIT License or the Apache License 2.0, at your option ([LICENSE-MIT](original-licenses/LICENSE-MIT),
+[LICENSE-APACHE](original-licenses/LICENSE-APACHE)). The Android port's changes are under the same terms.
 
 Required notices are in [NOTICE](NOTICE); third-party assets and their licenses are listed in
 [ATTRIBUTION.md](ATTRIBUTION.md).
