@@ -1,0 +1,2 @@
+d4389652b48c80a59db91c0e293ead0367e1d97f007ea3228d7ad411824bdbec  photocraft-0.23.1-4-arm64-v8a.apk
+be3fd2b04cb8e2ea83f9b3848953f1f0d92f0f58337fc8d004460439e1d0d5d1  PhotoCraft-0.23.1-4-arm64-v8a.apk.zip
